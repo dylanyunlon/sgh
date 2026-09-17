@@ -27,7 +27,8 @@ SHOP_BASE="https://miniapp-gig.szzgh.org/benefits/web-plat"
 UA="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.76(0x18004c3a) NetType/WIFI Language/zh_CN"
 REFERER="https://servicewechat.com/wx184c95bb87569866/52/page-frame.html"
 
-WATCH_THEMES=("送团圆" "送伴侣")
+# WATCH_THEMES=("送团圆" "送伴侣")
+WATCH_THEMES=( "送伴侣")
 
 # ==================== 邮件配置 ====================
 SMTP_HOST="smtp.exmail.qq.com"
