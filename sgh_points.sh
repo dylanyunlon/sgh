@@ -96,6 +96,21 @@ try:
 except: print('')"
 }
 
+# 从 JSON 数组提取题目信息 (行格式: qid|pkLib|answerNumber|type|A,B,C,D,E)
+parse_questions() {
+    python3 -c "
+import sys, json
+data = json.load(sys.stdin).get('data', [])
+for q in data:
+    qid = q['id']
+    pk_lib = q['pkQuestionLibrary']
+    an = q.get('answerNumber', '')
+    qt = q.get('type', 1)
+    letters = ','.join(item['number'] for item in q.get('itemRespVoList', []))
+    print(f'{qid}|{pk_lib}|{an}|{qt}|{letters}')
+" 2>/dev/null
+}
+
 # 答题活动: 获取题目→逐题提交正确答案→完成答题→抽积分
 run_quiz() {
     local pk="$1" name="$2"
@@ -118,65 +133,44 @@ run_quiz() {
             return
         fi
 
-        # 3) 逐题作答 (用python解析题目并提交)
-        echo "$resp" | python3 -c "
-import sys, json, subprocess, time
+        # 3) 解析题目
+        local questions last_answer_number=""
+        questions=$(echo "$resp" | parse_questions)
+        local total correct=0 idx=0
+        total=$(echo "$questions" | wc -l)
+        echo "    📝 共 ${total} 题"
 
-data = json.load(sys.stdin)
-questions = data.get('data', [])
-print(f'    📝 共 {len(questions)} 题')
+        # 4) 逐题作答 (bash 循环, 遍历选项直到答对)
+        while IFS='|' read -r qid pk_lib answer_number q_type letters; do
+            idx=$((idx+1))
+            last_answer_number="$answer_number"
+            local found=0
+            IFS=',' read -ra opts <<< "$letters"
+            for letter in "${opts[@]}"; do
+                resp=$(post_json "${BASE}/hd/questionActivity/userAnswerIsCorrect" \
+                    "{\"type\":${q_type},\"answer\":\"${letter}\",\"id\":\"${qid}\",\"answerNumber\":\"${answer_number}\",\"pkQuestionLibrary\":\"${pk_lib}\",\"pkQuestionActivity\":\"${pk}\"}")
+                local is_correct
+                is_correct=$(echo "$resp" | python3 -c "
+import sys,json
+try: print(json.load(sys.stdin)['data']['isCorrect'])
+except: print('False')" 2>/dev/null)
+                if [ "$is_correct" = "True" ]; then
+                    echo "    ✅ 第${idx}题: ${letter}"
+                    correct=$((correct+1))
+                    found=1
+                    break
+                fi
+                sleep 0.3
+            done
+            [ "$found" -eq 0 ] && echo "    ❌ 第${idx}题: 未找到正确答案"
+            sleep 0.5
+        done <<< "$questions"
+        echo "    📊 答对 ${correct}/${total}"
 
-correct = 0
-for i, q in enumerate(questions):
-    qid = q['id']
-    pk_lib = q['pkQuestionLibrary']
-    answer_number = q.get('answerNumber', '')
-    q_type = q.get('type', 1)
-    items = q.get('itemRespVoList', [])
-
-    # 逐个选项尝试, 从 A 开始
-    for item in items:
-        letter = item['number']
-        body = json.dumps({
-            'type': q_type,
-            'answer': letter,
-            'id': qid,
-            'answerNumber': answer_number,
-            'pkQuestionLibrary': pk_lib,
-            'pkQuestionActivity': '${pk}'
-        })
-        cmd = [
-            'curl', '-s', '-k', '-X', 'POST',
-            '${BASE}/hd/questionActivity/userAnswerIsCorrect',
-            '-H', 'Host: lsapp.szzgh.org:99',
-            '-H', 'Connection: keep-alive',
-            '-H', 'token: ${TOKEN}',
-            '-H', 'content-type: application/json',
-            '-H', 'mobile: ${MOBILE}',
-            '-H', 'Accept-Encoding: gzip,compress,br,deflate',
-            '-H', 'User-Agent: ${UA}',
-            '-H', 'Referer: ${REFERER}',
-            '--compressed',
-            '-d', body
-        ]
-        r = json.loads(subprocess.check_output(cmd).decode())
-        rd = r.get('data', {})
-        if rd.get('isCorrect'):
-            correct += 1
-            print(f'    ✅ 第{i+1}题: {letter}')
-            break
-        time.sleep(0.3)
-    else:
-        print(f'    ❌ 第{i+1}题: 未找到正确答案')
-    time.sleep(0.5)
-
-print(f'    📊 答对 {correct}/{len(questions)}')
-" 2>/dev/null || echo "    ❌ 答题过程出错"
-
-        # 4) 完成答题
+        # 5) 完成答题 (传入 answerNumber)
         sleep 1
         resp=$(post_json "${BASE}/hd/questionActivity/userFinishAnswer" \
-            "{\"pkQuestionActivity\":\"${pk}\",\"pkLuckyDrawActivity\":\"\",\"answerNumber\":\"\",\"street\":\"${QUIZ_STREET}\",\"city\":\"${QUIZ_CITY}\"}")
+            "{\"pkQuestionActivity\":\"${pk}\",\"pkLuckyDrawActivity\":\"\",\"answerNumber\":\"${last_answer_number}\",\"street\":\"${QUIZ_STREET}\",\"city\":\"${QUIZ_CITY}\"}")
         c=$(echo "$resp" | jval code)
         if [ "$c" = "0" ]; then
             echo "    ✅ 答题完成"
@@ -185,7 +179,7 @@ print(f'    📊 答对 {correct}/{len(questions)}')
         fi
     fi
 
-    # 5) 检查是否已抽过奖
+    # 6) 检查是否已抽过奖
     sleep 1
     resp=$(post_empty "${BASE}/hd/questionActivity/userIsLottery?pkRelevance=${pk}")
     local lotteried
@@ -193,7 +187,7 @@ print(f'    📊 答对 {correct}/{len(questions)}')
     if [ "$lotteried" = "True" ]; then
         echo "    ⏭️  已抽过奖"
     else
-        # 6) 抽积分
+        # 7) 抽积分
         resp=$(post_json "${BASE}/hd/questionActivity/answerDrawPrize" \
             "{\"activeType\":1,\"channelType\":0,\"city\":\"\",\"street\":\"\",\"pkRelevance\":\"${pk}\"}")
         c=$(echo "$resp" | jval code)
